@@ -9,32 +9,44 @@ API_KEY=os.environ["API_KEY"] #3f6_KDAKE1MgRd5jXKaW-fDim-s"
 USER_KEY=os.environ["USER_KEY"] #XhgAAN/gXxd55+fVf6Vy0BUfRRc="
 REV_URL=os.environ["REV_URL"] #https://api-sandbox.rev.com"
 WEBHOOK=os.environ["WEBHOOK"]
-account_sid = os.environ['TWILIO_ACCOUNT_SID']
-auth_token = os.environ['TWILIO_AUTH_TOKEN']
+ACCOUNT_SID = os.environ['TWILIO_ACCOUNT_SID']
+AUTH_TOKEN = os.environ['TWILIO_AUTH_TOKEN']
 
 def lambda_handler(event, context):
+    client = Client(ACCOUNT_SID, AUTH_TOKEN)
+    print(event)
     try:
         # Rev callback
+        print(event)
         order_number = event["order_number"]
+        client_ref = event["client_ref"]
         REV_ORDER_URL = os.path.join(REV_URL, f"orders/{order_number}")
         
         order_response = requests.get(REV_ORDER_URL, headers={
             "Authorization": f"Rev {API_KEY}:{USER_KEY}",
             "Content-Type": "application/json"
         })
-        
+        print(order_response)
+        from_num, to_num = client_ref.split("-")
+
         attachment_id = [attachment["id"] for attachment in response["attachments"] if attachment["kind"] == "transcript"][0]
+        print(attachment_id)
+
         attachment_response = requests.get(os.path.join(REV_URL, f"attachments/{attachment_id}/content"), headers={
             "Authorization": f"Rev {API_KEY}:{USER_KEY}"
         })
         print(attachment_response.content)
         
-        sns = boto3.client('sns')
-        sns.publish(
-            TopicArn = "arn:aws:sns:us-east-1:497284921492:jott-another",
-            Message = attachment_response.content
-        )
-    except:
+        message = client.messages \
+                .create(
+                     body=f"Call: {attachment_response.content}",
+                     from_=urllib.parse.unquote(from_num),
+                     to=rllib.parse.unquote(to_num)
+                 )
+
+        print(message.sid)
+    except Exception as e:
+        print(e)
         # Twilio callback
         audio_length=event["RecordingDuration"]
         audio_url=urllib.parse.unquote(event["RecordingUrl"])
@@ -71,16 +83,15 @@ def lambda_handler(event, context):
                 "notification": {
                     "url": WEBHOOK,
                     "level": "FinalOnly"
-                }
+                },
+                "client_ref" : f"{event["Called"]}-{event["From"]}"
             }))
-
-        client = Client(account_sid, auth_token)
 
         message = client.messages \
                         .create(
-                             body="Join Earth's mightiest heroes. Like Kevin Bacon.",
-                             from_='+18167354511',
-                             to='+17082785155'
+                             body="Your phone note is currently being processed.",
+                             from_=urllib.parse.unquote(event["Called"]),
+                             to=rllib.parse.unquote(event["From"])
                          )
 
         print(message.sid)
