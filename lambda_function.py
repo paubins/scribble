@@ -5,6 +5,10 @@ import os
 import json
 from twilio.rest import Client
 
+import logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
 API_KEY=os.environ["API_KEY"] #3f6_KDAKE1MgRd5jXKaW-fDim-s"
 USER_KEY=os.environ["USER_KEY"] #XhgAAN/gXxd55+fVf6Vy0BUfRRc="
 REV_URL=os.environ["REV_URL"] #https://api-sandbox.rev.com"
@@ -14,34 +18,37 @@ AUTH_TOKEN = os.environ['TWILIO_AUTH_TOKEN']
 
 def lambda_handler(event, context):
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
-    print(event)
     try:
         # Rev callback
         print(event)
         order_number = event["order_number"]
         client_ref = event["client_ref"]
-        REV_ORDER_URL = os.path.join(REV_URL, f"orders/{order_number}")
-        
+        print(REV_URL)
+        REV_ORDER_URL = os.path.join(REV_URL, f"api/v1/orders/{order_number}")
+        print(REV_ORDER_URL)
         order_response = requests.get(REV_ORDER_URL, headers={
             "Authorization": f"Rev {API_KEY}:{USER_KEY}",
             "Content-Type": "application/json"
         })
-        print(order_response)
-        from_num, to_num = client_ref.split("-")
+
+        print(order_response.content)
+        print(urllib.parse.unquote(client_ref))
+        response = json.loads(order_response.content)
+        from_num, to_num = urllib.parse.unquote(client_ref).split("-")
 
         attachment_id = [attachment["id"] for attachment in response["attachments"] if attachment["kind"] == "transcript"][0]
         print(attachment_id)
 
-        attachment_response = requests.get(os.path.join(REV_URL, f"attachments/{attachment_id}/content"), headers={
+        attachment_response = requests.get(os.path.join(REV_URL, f"api/v1/attachments/{attachment_id}/content.txt"), headers={
             "Authorization": f"Rev {API_KEY}:{USER_KEY}"
         })
-        print(attachment_response.content)
-        
+        call_content = attachment_response.content.decode('utf-8')
+        print(call_content)
         message = client.messages \
                 .create(
-                     body=f"Call: {attachment_response.content}",
+                     body=call_content,
                      from_=urllib.parse.unquote(from_num),
-                     to=rllib.parse.unquote(to_num)
+                     to=urllib.parse.unquote(to_num)
                  )
 
         print(message.sid)
@@ -63,6 +70,10 @@ def lambda_handler(event, context):
         
         print(f"submit order with input {file_uri}")
         print(os.path.join(REV_URL, "api/v1/orders"))
+
+        from_num = event["Called"]
+        to_num = event["From"]
+
         response = requests.post(os.path.join(REV_URL, "api/v1/orders"), headers={
                 "Authorization": f"Rev {API_KEY}:{USER_KEY}",
                 "Content-Type": "application/json"
@@ -84,14 +95,15 @@ def lambda_handler(event, context):
                     "url": WEBHOOK,
                     "level": "FinalOnly"
                 },
-                "client_ref" : f"{event["Called"]}-{event["From"]}"
+                "client_ref" : f"{from_num}-{to_num}"
             }))
 
         message = client.messages \
                         .create(
-                             body="Your phone note is currently being processed.",
+                             body="Your phone note is currently being processed, should take about 5 minutes.",
                              from_=urllib.parse.unquote(event["Called"]),
-                             to=rllib.parse.unquote(event["From"])
+                             to=urllib.parse.unquote(event["From"]),
+                             media_url=[audio_url + ".mp3"]
                          )
 
         print(message.sid)
