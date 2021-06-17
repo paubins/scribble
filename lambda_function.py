@@ -5,24 +5,102 @@ import os
 import json
 from twilio.rest import Client
 
+from sgqlc.operation import Operation
+from sgqlc.endpoint.http import HTTPEndpoint
+
+from onesignal_sdk.client import Client as OneSignalClient
+
+import hmac
+import hashlib
+import requests
+
+from urllib.parse import unquote, parse_qsl
 import logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-API_KEY=os.environ["API_KEY"] #3f6_KDAKE1MgRd5jXKaW-fDim-s"
-USER_KEY=os.environ["USER_KEY"] #XhgAAN/gXxd55+fVf6Vy0BUfRRc="
-REV_URL=os.environ["REV_URL"] #https://api-sandbox.rev.com"
-WEBHOOK=os.environ["WEBHOOK"]
-ACCOUNT_SID = os.environ['TWILIO_ACCOUNT_SID']
-AUTH_TOKEN = os.environ['TWILIO_AUTH_TOKEN']
+API_KEY=os.environ.get("API_KEY", "") #3f6_KDAKE1MgRd5jXKaW-fDim-s"
+USER_KEY=os.environ.get("USER_KEY", "") #XhgAAN/gXxd55+fVf6Vy0BUfRRc="
+REV_URL=os.environ.get("REV_URL", "") #https://api-sandbox.rev.com"
+WEBHOOK=os.environ.get("WEBHOOK", "")
+
+ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
+VERIFY_SERVICE_SID = os.environ.get("VERIFY_SERVICE_SID", "")
+
+ONESIGNAL_APP_ID = os.environ.get("ONESIGNAL_APP_ID", "")
+ONESIGNAL_REST_API_KEY = os.environ.get("ONESIGNAL_REST_API_KEY", "")
+ONESIGNAL_USER_AUTH_KEY = os.environ.get("ONESIGNAL_USER_AUTH_KEY", "")
+
+GRAPHCMS_TOKEN = os.environ.get("GCMS_TOKEN", "")
+GRAPHCMS_ENDPOINT = os.environ.get('GRAPHCMS_ENDPOINT', "")
+
 
 def lambda_handler(event, context):
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
+    print(event)
+    print(context)
+
+    query = dict(parse_qsl(event['body-json']))
+    path = event['context']['resource-path']
+
+    if "start" in path:
+        country_code = query.get("country_code")
+        phone_number = query.get("phone_number")
+        full_phone = "+{}{}".format(country_code, phone_number)
+
+        try:
+            r = client.verify \
+                .services(VERIFY_SERVICE_SID) \
+                .verifications \
+                .create(to=full_phone, channel='sms')
+            return json.dumps({"success" : True, "message" : "Verification sent to {}".format(r.to)})
+        except Exception as e:
+            return json.dumps({"success" : False, "message" : "Error sending verification: {}".format(e)})
+    elif "check" in path:
+        country_code = query.get("country_code")
+        phone_number = query.get("phone_number")
+        full_phone = "+{}{}".format(country_code, phone_number)
+        code = query.get("verification_code")
+        device_id = query.get("device_id")
+
+        try:
+            r = client.verify \
+                .services(VERIFY_SERVICE_SID) \
+                .verification_checks \
+                .create(to=full_phone, code=code)
+
+            if r.status == "approved":
+                # insert into graph db
+                print(full_phone)
+                signature = hmac.new(ONESIGNAL_REST_API_KEY, full_phone, hashlib.sha256).hexdigest()
+                q3 = """
+                    mutation {
+                      upsertContact(
+                        where: { phone: "%s" }
+                        upsert: {
+                          create: { phone: "%s", device_id: "%s" }
+                          update: { phone: "%s", device_id: "%s" }
+                        }
+                      ) {
+                        id
+                        phone
+                      }
+                    }
+                    """ % (signature)
+                result = endpoint(query=q3)
+                print(result)
+                return json.dumps({"success" : True, "message" : "Valid token."})
+            else:
+                return json.dumps({"success" : False, "message" : "Invalid token."})
+        except Exception as e:
+            return json.dumps({"success" : False, "message" : "Error checking verification: {}".format(e)})
+
     try:
         # Rev callback
-        print(event)
-        order_number = event["order_number"]
-        client_ref = event["client_ref"]
+        print(query)
+        order_number = query["order_number"]
+        client_ref = query["client_ref"]
         print(REV_URL)
         REV_ORDER_URL = os.path.join(REV_URL, f"api/v1/orders/{order_number}")
         print(REV_ORDER_URL)
@@ -52,11 +130,59 @@ def lambda_handler(event, context):
                  )
 
         print(message.sid)
+
+        # grab the associated device id
+        headers = {'Authorization': f"Bearer {GRAPHCMS_TOKEN}"}
+        endpoint = HTTPEndpoint(GRAPHCMS_ENDPOINT, headers)
+        print(from_num)
+
+        signature = hmac.new(ONESIGNAL_REST_API_KEY, from_num, hashlib.sha256).hexdigest()
+
+        q3 = """
+            query {
+              contact(where: {phone: "%s"}) {
+                device_id
+              }
+            }
+            """ % (signature)
+        result = endpoint(query=q3)
+        print(result)
+
+        try:
+            device_id = result['data']['contact']['device_id']
+            print(device_id)
+
+            os_client = OneSignalClient(app_id=ONESIGNAL_APP_ID,
+                rest_api_key=ONESIGNAL_REST_API_KEY,
+                user_auth_key=ONESIGNAL_USER_AUTH_KEY)
+
+            try:
+                notification_body = {
+                    'contents': {'en': 'New notification'},
+                    'included_segments': [device_id],
+                }
+
+                # Make a request to OneSignal and parse response
+                response2 = os_client.send_notification(notification_body)
+                print(response2.body) # JSON parsed response
+                print(response2.status_code) # Status code of response
+                print(response2.http_response) # Original http response object.
+
+            except OneSignalHTTPError as e: # An exception is raised if response.status_code != 2xx
+                print(e)
+                print(e.status_code)
+                print(e.http_response.json())
+
+        except Exception as e:
+            print(e)
+
+        print(response.body)
+
     except Exception as e:
         print(e)
         # Twilio callback
-        audio_length=event["RecordingDuration"]
-        audio_url=urllib.parse.unquote(event["RecordingUrl"])
+        audio_length=query["RecordingDuration"]
+        audio_url=urllib.parse.unquote(query["RecordingUrl"])
         
         print("upload the file and the uri")
         file_uri = requests.post(os.path.join(REV_URL, "api/v1/inputs"), headers={
@@ -71,8 +197,8 @@ def lambda_handler(event, context):
         print(f"submit order with input {file_uri}")
         print(os.path.join(REV_URL, "api/v1/orders"))
 
-        from_num = event["Called"]
-        to_num = event["From"]
+        from_num = query["Called"]
+        to_num = query["From"]
 
         response = requests.post(os.path.join(REV_URL, "api/v1/orders"), headers={
                 "Authorization": f"Rev {API_KEY}:{USER_KEY}",
@@ -101,8 +227,8 @@ def lambda_handler(event, context):
         message = client.messages \
                         .create(
                              body="Your phone note is currently being processed, should take about 5 minutes.",
-                             from_=urllib.parse.unquote(event["Called"]),
-                             to=urllib.parse.unquote(event["From"]),
+                             from_=urllib.parse.unquote(query["Called"]),
+                             to=urllib.parse.unquote(query["From"]),
                              media_url=[audio_url + ".mp3"]
                          )
 
