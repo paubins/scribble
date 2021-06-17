@@ -45,19 +45,23 @@ def lambda_handler(event, context):
     path = event['context']['resource-path']
 
     if "start" in path:
+        query = event['params']['querystring']
         country_code = query.get("country_code")
         phone_number = query.get("phone_number")
         full_phone = "+{}{}".format(country_code, phone_number)
 
         try:
+            print(VERIFY_SERVICE_SID)
             r = client.verify \
                 .services(VERIFY_SERVICE_SID) \
                 .verifications \
                 .create(to=full_phone, channel='sms')
             return json.dumps({"success" : True, "message" : "Verification sent to {}".format(r.to)})
         except Exception as e:
+            print(e)
             return json.dumps({"success" : False, "message" : "Error sending verification: {}".format(e)})
     elif "check" in path:
+        query = event['params']['querystring']
         country_code = query.get("country_code")
         phone_number = query.get("phone_number")
         full_phone = "+{}{}".format(country_code, phone_number)
@@ -73,27 +77,31 @@ def lambda_handler(event, context):
             if r.status == "approved":
                 # insert into graph db
                 print(full_phone)
-                signature = hmac.new(ONESIGNAL_REST_API_KEY, full_phone, hashlib.sha256).hexdigest()
+                signature = hmac.new(b"{ONESIGNAL_REST_API_KEY}", b"{full_phone}", hashlib.sha256).hexdigest()
                 q3 = """
                     mutation {
                       upsertContact(
                         where: { phone: "%s" }
                         upsert: {
-                          create: { phone: "%s", device_id: "%s" }
-                          update: { phone: "%s", device_id: "%s" }
+                          create: { phone: "%s", deviceId: "%s" }
+                          update: { phone: "%s", deviceId: "%s" }
                         }
                       ) {
                         id
                         phone
                       }
                     }
-                    """ % (signature)
+                    """ % (signature, signature, device_id, signature, device_id)
+                print(q3)
+                headers = {'Authorization': f"Bearer {GRAPHCMS_TOKEN}"}
+                endpoint = HTTPEndpoint(GRAPHCMS_ENDPOINT, headers)
                 result = endpoint(query=q3)
                 print(result)
                 return json.dumps({"success" : True, "message" : "Valid token."})
             else:
                 return json.dumps({"success" : False, "message" : "Invalid token."})
         except Exception as e:
+            print(e)
             return json.dumps({"success" : False, "message" : "Error checking verification: {}".format(e)})
 
     try:
@@ -136,12 +144,12 @@ def lambda_handler(event, context):
         endpoint = HTTPEndpoint(GRAPHCMS_ENDPOINT, headers)
         print(from_num)
 
-        signature = hmac.new(ONESIGNAL_REST_API_KEY, from_num, hashlib.sha256).hexdigest()
+        signature = hmac.new(b"{ONESIGNAL_REST_API_KEY}", b"{from_num}", hashlib.sha256).hexdigest()
 
         q3 = """
             query {
               contact(where: {phone: "%s"}) {
-                device_id
+                deviceId
               }
             }
             """ % (signature)
@@ -149,7 +157,7 @@ def lambda_handler(event, context):
         print(result)
 
         try:
-            device_id = result['data']['contact']['device_id']
+            device_id = result['data']['contact']['deviceId']
             print(device_id)
 
             os_client = OneSignalClient(app_id=ONESIGNAL_APP_ID,
@@ -159,7 +167,7 @@ def lambda_handler(event, context):
             try:
                 notification_body = {
                     'contents': {'en': 'New notification'},
-                    'included_segments': [device_id],
+                    'include_ios_tokens': [device_id],
                 }
 
                 # Make a request to OneSignal and parse response
